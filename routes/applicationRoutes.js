@@ -1,6 +1,5 @@
 import express from "express";
 import mongoose from "mongoose";
-
 import { Application } from "../models/Application.js";
 import { Student } from "../models/Student.js";
 import { Internship } from "../models/Internship.js";
@@ -19,46 +18,74 @@ router.get("/test", (req, res) => {
 });
 
 /* =====================================================
-   APPLY
+   CREATE APPLICATION
+   POST /api/applications
 ===================================================== */
 
 router.post("/", async (req, res) => {
     try {
         const {
             studentId,
+            studentEmail,
             internshipId
         } = req.body;
 
-        if (!studentId || !internshipId) {
+        /* -----------------------------
+           Validate Internship ID
+        ----------------------------- */
+
+        if (!internshipId) {
             return res.status(400).json({
                 success: false,
-                message:
-                    "Student ID and internship ID are required"
+                message: "internshipId is required"
             });
         }
 
-        if (
-            !mongoose.Types.ObjectId.isValid(studentId) ||
-            !mongoose.Types.ObjectId.isValid(internshipId)
-        ) {
+        if (!mongoose.Types.ObjectId.isValid(internshipId)) {
             return res.status(400).json({
                 success: false,
-                message: "Invalid student or internship ID"
+                message: "Invalid internshipId"
             });
         }
 
-        const student =
-            await Student.findById(studentId);
+        /* -----------------------------
+           Find Student
+        ----------------------------- */
+
+        let student = null;
+
+        if (studentId) {
+            if (!mongoose.Types.ObjectId.isValid(studentId)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Invalid studentId"
+                });
+            }
+
+            student = await Student.findById(studentId);
+        }
+
+        /* If studentId is not available,
+           search using email */
+
+        if (!student && studentEmail) {
+            student = await Student.findOne({
+                email: studentEmail.toLowerCase().trim()
+            });
+        }
 
         if (!student) {
             return res.status(404).json({
                 success: false,
-                message: "Student not found"
+                message: "Student profile not found"
             });
         }
 
-        const internship =
-            await Internship.findById(internshipId);
+        /* -----------------------------
+           Find Internship
+        ----------------------------- */
+
+        const internship = await Internship.findById(internshipId);
 
         if (!internship) {
             return res.status(404).json({
@@ -67,128 +94,199 @@ router.post("/", async (req, res) => {
             });
         }
 
-        const existing =
-            await Application.findOne({
-                studentId,
-                internshipId
-            });
+        /* -----------------------------
+           Check Duplicate Application
+        ----------------------------- */
 
-        if (existing) {
+        const existingApplication = await Application.findOne({
+            studentId: student._id,
+            internshipId: internship._id
+        });
+
+        if (existingApplication) {
             return res.status(409).json({
                 success: false,
-                message:
-                    "You have already applied for this internship",
-                application: existing
+                message: "You have already applied for this internship.",
+                application: existingApplication
             });
         }
 
-        const application =
-            await Application.create({
-                studentId,
-                internshipId,
-                studentName: student.name,
-                internshipTitle: internship.title,
-                company: internship.company,
-                status: "Applied"
-            });
+        /* -----------------------------
+           Create Application
+        ----------------------------- */
 
-        res.status(201).json({
+        const application = await Application.create({
+            studentId: student._id,
+            internshipId: internship._id,
+            studentName: student.name,
+            internshipTitle: internship.title,
+            company: internship.company,
+            status: "Applied"
+        });
+
+        /* -----------------------------
+           Return Application
+        ----------------------------- */
+
+        return res.status(201).json({
             success: true,
-            message:
-                "Application submitted successfully",
+            message: "Application submitted successfully",
             application
         });
 
     } catch (error) {
-        console.error("Application error:", error);
 
-        res.status(500).json({
+        console.error("CREATE APPLICATION ERROR:", error);
+
+        /* MongoDB duplicate-key protection */
+
+        if (error.code === 11000) {
+            return res.status(409).json({
+                success: false,
+                message: "You have already applied for this internship."
+            });
+        }
+
+        return res.status(500).json({
             success: false,
-            message:
-                "Failed to submit application",
+            message: "Failed to submit application",
             error: error.message
         });
     }
 });
 
 /* =====================================================
-   STUDENT APPLICATIONS
+   GET APPLICATIONS BY STUDENT ID
+   GET /api/applications/student/:studentId
 ===================================================== */
 
-router.get(
-    "/student/:studentId",
-    async (req, res) => {
-        try {
-            const { studentId } = req.params;
+router.get("/student/:studentId", async (req, res) => {
+    try {
+        const { studentId } = req.params;
 
-            if (
-                !mongoose.Types.ObjectId.isValid(studentId)
-            ) {
-                return res.status(400).json({
-                    success: false,
-                    message: "Invalid student ID"
-                });
-            }
-
-            const applications =
-                await Application.find({
-                    studentId
-                })
-                    .populate("internshipId")
-                    .sort({ createdAt: -1 });
-
-            res.json({
-                success: true,
-                count: applications.length,
-                applications
-            });
-
-        } catch (error) {
-            res.status(500).json({
+        if (!mongoose.Types.ObjectId.isValid(studentId)) {
+            return res.status(400).json({
                 success: false,
-                message:
-                    "Failed to fetch applications",
-                error: error.message
+                message: "Invalid studentId"
             });
         }
-    }
-);
 
-/* =====================================================
-   ALL APPLICATIONS
-===================================================== */
+        const applications = await Application.find({
+            studentId
+        })
+            .populate("internshipId")
+            .sort({ createdAt: -1 });
 
-router.get("/", async (req, res) => {
-    try {
-        const applications =
-            await Application.find()
-                .populate("studentId")
-                .populate("internshipId")
-                .sort({ createdAt: -1 });
-
-        res.json({
+        return res.json({
             success: true,
             count: applications.length,
             applications
         });
 
     } catch (error) {
-        res.status(500).json({
+
+        console.error("GET STUDENT APPLICATIONS ERROR:", error);
+
+        return res.status(500).json({
             success: false,
-            message:
-                "Failed to fetch applications",
+            message: "Failed to fetch applications",
             error: error.message
         });
     }
 });
 
 /* =====================================================
-   UPDATE STATUS
+   GET APPLICATIONS BY STUDENT EMAIL
+   GET /api/applications/student-email/:email
+===================================================== */
+
+router.get("/student-email/:email", async (req, res) => {
+    try {
+        const email = decodeURIComponent(req.params.email)
+            .toLowerCase()
+            .trim();
+
+        const student = await Student.findOne({ email });
+
+        if (!student) {
+            return res.status(404).json({
+                success: false,
+                message: "Student profile not found"
+            });
+        }
+
+        const applications = await Application.find({
+            studentId: student._id
+        })
+            .populate("internshipId")
+            .sort({ createdAt: -1 });
+
+        return res.json({
+            success: true,
+            count: applications.length,
+            applications
+        });
+
+    } catch (error) {
+
+        console.error("GET APPLICATIONS BY EMAIL ERROR:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Failed to fetch applications",
+            error: error.message
+        });
+    }
+});
+
+/* =====================================================
+   GET ALL APPLICATIONS
+   GET /api/applications
+===================================================== */
+
+router.get("/", async (req, res) => {
+    try {
+
+        const applications = await Application.find()
+            .populate("studentId")
+            .populate("internshipId")
+            .sort({ createdAt: -1 });
+
+        return res.json({
+            success: true,
+            count: applications.length,
+            applications
+        });
+
+    } catch (error) {
+
+        console.error("GET ALL APPLICATIONS ERROR:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Failed to fetch applications",
+            error: error.message
+        });
+    }
+});
+
+/* =====================================================
+   UPDATE APPLICATION STATUS
+   PUT /api/applications/:id
 ===================================================== */
 
 router.put("/:id", async (req, res) => {
     try {
+
+        const { id } = req.params;
         const { status } = req.body;
+
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid application ID"
+            });
+        }
 
         const allowedStatuses = [
             "Applied",
@@ -205,26 +303,11 @@ router.put("/:id", async (req, res) => {
             });
         }
 
-        if (
-            !mongoose.Types.ObjectId.isValid(
-                req.params.id
-            )
-        ) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid application ID"
-            });
-        }
-
-        const application =
-            await Application.findByIdAndUpdate(
-                req.params.id,
-                { status },
-                {
-                    new: true,
-                    runValidators: true
-                }
-            );
+        const application = await Application.findByIdAndUpdate(
+            id,
+            { status },
+            { new: true }
+        );
 
         if (!application) {
             return res.status(404).json({
@@ -233,18 +316,19 @@ router.put("/:id", async (req, res) => {
             });
         }
 
-        res.json({
+        return res.json({
             success: true,
-            message:
-                "Application status updated",
+            message: "Application status updated",
             application
         });
 
     } catch (error) {
-        res.status(500).json({
+
+        console.error("UPDATE APPLICATION ERROR:", error);
+
+        return res.status(500).json({
             success: false,
-            message:
-                "Failed to update application",
+            message: "Failed to update application",
             error: error.message
         });
     }
